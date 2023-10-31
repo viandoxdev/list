@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM items",
+  "query": "SELECT * FROM items ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -28,5 +28,5 @@
       false
     ]
   },
-  "hash": "467dcd7fd379750cbf30a190d06dc1b3e61b1bd7ef288fbf6fbedec52c276434"
+  "hash": "3356cdd106b7af4e58f634b38739eadac7639f1a5a04cc6423fea71a10b7faab"
 }

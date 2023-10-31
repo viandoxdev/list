@@ -10,3 +10,8 @@ services:
       POSTGRES_USER: listdbuser
       POSTGRES_PASSWORD: listdbpass
       POSTGRES_DB: listdb
+  web:
+    build: .
+    restart: always
+    ports:
+      - "9000:9000"

@@ -34,8 +34,8 @@ pub enum ListError {
 lazy_static! {
     static ref LISTS: Regex = Regex::new(r"^/lists/*$").unwrap();
     static ref ITEMS: Regex = Regex::new(r"^/items/*$").unwrap();
-    static ref LIST: Regex = Regex::new(r"^/lists/([0-9])+/*$").unwrap();
-    static ref ITEM: Regex = Regex::new(r"^/items/([0-9])+/*$").unwrap();
+    static ref LIST: Regex = Regex::new(r"^/lists/([0-9]+)/*$").unwrap();
+    static ref ITEM: Regex = Regex::new(r"^/items/([0-9]+)/*$").unwrap();
     static ref LIST_ITEMS: Regex = Regex::new(r"^/lists/([0-9]+)/items/*$").unwrap();
     static ref AUTH: String = format!("Basic {}", BASE64_URL_SAFE.encode(include_str!("../pass")));
 }
@@ -66,7 +66,20 @@ async fn handle_req(
     req: Request<Body>,
     res: &mut Response<Body>,
 ) -> Result<(), ListError> {
+
     log::debug!("Got request: {:?}", req);
+
+    res.headers_mut().insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    res.headers_mut().insert("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH, DELETE".parse().unwrap());
+    res.headers_mut().insert("Access-Control-Allow-Headers", "X-Requested-With,Content-Type,Authorization".parse().unwrap());
+
+    if req.method() == Method::OPTIONS {
+        res.headers_mut().insert("Allow", "OPTIONS, GET, POST, PATCH, DELETE".parse().unwrap());
+        res.headers_mut().insert("Access-Control-Max-Age", "86400".parse().unwrap());
+        *res.status_mut() = StatusCode::NO_CONTENT;
+        return Ok(());
+    }
+
     // Check auth header
     match req.headers().get("Authorization") {
         Some(auth) => {
@@ -222,38 +235,33 @@ async fn handle_req_wrap(
     let mut res = Response::new(Body::empty());
 
     match handle_req(db, req, &mut res).await {
-        Ok(()) => Ok(res),
         Err(ListError::NoSuchList(id)) => {
             *res.status_mut() = StatusCode::BAD_REQUEST;
             *res.body_mut() = format!("Reference to a list that doesn't exist (id: {id})").into();
-            Ok(res)
         }
         Err(ListError::NoSuchItem(id)) => {
             *res.status_mut() = StatusCode::BAD_REQUEST;
             *res.body_mut() = format!("Reference to an item that doesn't exist (id: {id})").into();
-            Ok(res)
         }
         Err(ListError::DuplicateListName(name)) => {
             *res.status_mut() = StatusCode::BAD_REQUEST;
             *res.body_mut() = format!("Trying to create a list with a duplicate name (name: '{name}')").into();
-            Ok(res)
         }
         Err(ListError::HyperError(e)) => {
             *res.status_mut() = StatusCode::BAD_REQUEST;
             *res.body_mut() = format!("Error with request body: {e}").into();
-            Ok(res)
         }
         Err(ListError::SerdeError(e)) => {
             *res.status_mut() = StatusCode::BAD_REQUEST;
             *res.body_mut() = format!("Error with request body: {e}").into();
-            Ok(res)
         }
         Err(e) => {
             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             *res.body_mut() = format!("Server error: {e:?}").into();
-            Ok(res)
-        }
-    }
+        },
+        _ => {}
+    };
+    Ok(res)
 }
 
 #[tokio::main]

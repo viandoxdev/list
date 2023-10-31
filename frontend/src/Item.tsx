@@ -3,9 +3,10 @@
 import { onCleanup, onMount } from 'solid-js';
 import './Item.css'
 import { animationFrame, time } from './utils';
+import { Item } from './api';
 
 interface ItemProps {
-  content: string,
+  item: Item,
   onEdit: (content: string) => any,
   onRemove: () => any,
 }
@@ -26,7 +27,7 @@ enum Direction {
   Horizontal,
 }
 
-function Item(props: ItemProps) {
+function ItemComponent(props: ItemProps) {
   let div: HTMLDivElement;
   // Last position of the touch
   let lastPos = { x: 0, y: 0 };
@@ -85,7 +86,7 @@ function Item(props: ItemProps) {
     if (touch) {
       if (traveled < 10) {
         // We barely moved since the start of the touch, this is a click
-        props.onEdit(props.content);
+        props.onEdit(props.item.content);
       }
       if (Math.abs(offset) >= window.innerWidth * 0.3) {
         removed = true;
@@ -140,10 +141,10 @@ function Item(props: ItemProps) {
   return (
     <>
       <div ref={div} class="item" onTouchStart={onTouchStart}>
-        {props.content}
+        {props.item.content}
       </div>
     </>
   )
 }
 
-export default Item
+export default ItemComponent

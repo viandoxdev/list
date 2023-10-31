@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT FROM lists WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67ba1340ea67726c36b949913c3e37d20c3d4ac1e0dd5bee171fb14d39c4a939"
+}

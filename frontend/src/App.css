@@ -41,6 +41,9 @@
   font-size: 1.5em;
   opacity: 0.5;
 }
+#list_name {
+  font-weight: bold;
+}
 #add {
   position: absolute;
   bottom: 1rem;
@@ -61,9 +64,10 @@
   background-color: #fff06e;
   color: black;
   display: flex;
-  gap: 1rem;
   align-items: center;
   font-size: 1.3em;
+  gap: 1rem;
+  vertical-align: center;
 }
 #menu {
   background-color: transparent;

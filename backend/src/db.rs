@@ -6,7 +6,7 @@ use sqlx::{
 
 use crate::ListError;
 
-const DATABASE_URL: &str = "postgres://listdbuser:listdbpass@localhost:9001/listdb";
+const DATABASE_URL: &str = "postgres://listdbuser:listdbpass@db:5432/listdb";
 
 /// Our database object used to do all operations
 pub struct ListDatabase {
@@ -50,14 +50,14 @@ impl ListDatabase {
 
     /// Fetch all lists
     pub async fn fetch_lists(&self) -> Result<Vec<List>, ListError> {
-        Ok(sqlx::query_as!(List, "SELECT * FROM lists")
+        Ok(sqlx::query_as!(List, "SELECT * FROM lists ORDER BY id")
             .fetch_all(&self.pool)
             .await?)
     }
 
     /// Fetch a single list
     pub async fn fetch_list(&self, list: i32) -> Result<List, ListError> {
-        match sqlx::query_as!(List, "SELECT * FROM lists WHERE id = $1", list).fetch_one(&self.pool).await {
+        match sqlx::query_as!(List, "SELECT * FROM lists WHERE id = $1 ORDER BY id", list).fetch_one(&self.pool).await {
             Ok(res) => Ok(res),
             Err(sqlx::Error::RowNotFound) => Err(ListError::NoSuchList(list)),
             Err(e) => Err(ListError::SqlxError(e))
@@ -66,7 +66,7 @@ impl ListDatabase {
 
     /// Fetch all the items (from all lists)
     pub async fn fetch_all_items(&self) -> Result<Vec<Item>, ListError> {
-        Ok(sqlx::query_as!(Item, "SELECT * FROM items")
+        Ok(sqlx::query_as!(Item, "SELECT * FROM items ORDER BY id")
             .fetch_all(&self.pool)
             .await?)
     }
@@ -75,12 +75,12 @@ impl ListDatabase {
     pub async fn fetch_items(&self, list: i32) -> Result<Vec<Item>, ListError> {
         let res = sqlx::query!("SELECT FROM lists WHERE id = $1", list).execute(&self.pool).await?;
         (res.rows_affected() > 0).then_some(()).ok_or(ListError::NoSuchList(list))?;
-        Ok(sqlx::query_as!(Item, "SELECT * FROM items WHERE list_id = $1", list).fetch_all(&self.pool).await?)
+        Ok(sqlx::query_as!(Item, "SELECT * FROM items WHERE list_id = $1 ORDER BY id", list).fetch_all(&self.pool).await?)
     }
 
     /// Fetch a single item
     pub async fn fetch_item(&self, item: i32) -> Result<Item, ListError> {
-        match sqlx::query_as!(Item, "SELECT * FROM items WHERE id = $1", item).fetch_one(&self.pool).await {
+        match sqlx::query_as!(Item, "SELECT * FROM items WHERE id = $1 ORDER BY id", item).fetch_one(&self.pool).await {
             Ok(res) => Ok(res),
             Err(sqlx::Error::RowNotFound) => Err(ListError::NoSuchItem(item)),
             Err(e) => Err(ListError::SqlxError(e))
