@@ -1,19 +1,50 @@
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use std::sync::Arc;
+use std::time::Duration;
 
-use base64::{prelude::BASE64_URL_SAFE, Engine};
-use db::{Item, List, ListDatabase};
-use futures::StreamExt;
-use hyper::{
-    body::{HttpBody, self},
-    service::{make_service_fn, service_fn},
-    Body, Method, Request, Response, Server, StatusCode,
+use axum::extract::Json as EJson;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
 };
+use axum_typed_websockets::{Message, WebSocket, WebSocketUpgrade};
+use db::{Item, List, ListDatabase};
 use lazy_static::lazy_static;
-use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::broadcast::{Receiver, Sender};
+use tokio::time::timeout;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::{
+    cors::CorsLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
+};
+use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt};
 
 mod db;
+
+struct AppState {
+    db: Arc<ListDatabase>,
+    tx: Sender<ServerMessage>,
+    rx: Receiver<ServerMessage>,
+}
+
+impl Clone for AppState {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            tx: self.tx.clone(),
+            rx: self.tx.subscribe(),
+        }
+    }
+}
+
+impl AppState {
+    fn send_to_ws(&self, payload: ServerMessage) {
+        let _ = self.tx.send(payload);
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ListError {
@@ -25,19 +56,40 @@ pub enum ListError {
     NoSuchItem(i32),
     #[error("Can't create list with duplicate name '{0}'")]
     DuplicateListName(String),
-    #[error("Serialization/Deserialization error")]
-    SerdeError(#[from] serde_json::Error),
-    #[error("Body error")]
-    HyperError(#[from] hyper::Error)
+}
+
+type Result<T> = std::result::Result<T, ListError>;
+
+impl IntoResponse for ListError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            ListError::DuplicateListName(name) => (
+                StatusCode::BAD_REQUEST,
+                format!("Can't create list with duplicate name (name: '{name}')"),
+            )
+                .into_response(),
+            ListError::NoSuchList(id) => (
+                StatusCode::BAD_REQUEST,
+                format!("Reference to list that doesn't exist (id: {id})"),
+            )
+                .into_response(),
+            ListError::NoSuchItem(id) => (
+                StatusCode::BAD_REQUEST,
+                format!("Reference to item that doesn't exist (id: {id})"),
+            )
+                .into_response(),
+            ListError::SqlxError(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Sqlx error: {e:?}"),
+            )
+                .into_response(),
+        }
+    }
 }
 
 lazy_static! {
-    static ref LISTS: Regex = Regex::new(r"^/lists/*$").unwrap();
-    static ref ITEMS: Regex = Regex::new(r"^/items/*$").unwrap();
-    static ref LIST: Regex = Regex::new(r"^/lists/([0-9]+)/*$").unwrap();
-    static ref ITEM: Regex = Regex::new(r"^/items/([0-9]+)/*$").unwrap();
-    static ref LIST_ITEMS: Regex = Regex::new(r"^/lists/([0-9]+)/items/*$").unwrap();
-    static ref AUTH: String = format!("Basic {}", BASE64_URL_SAFE.encode(include_str!("../pass")));
+    static ref USERNAME: &'static str = include_str!("../pass").split(":").next().unwrap();
+    static ref PASSWORD: &'static str = include_str!("../pass").split(":").last().unwrap();
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,230 +113,182 @@ struct ItemEdit {
     content: String,
 }
 
-async fn handle_req(
-    db: Arc<ListDatabase>,
-    req: Request<Body>,
-    res: &mut Response<Body>,
-) -> Result<(), ListError> {
-
-    log::debug!("Got request: {:?}", req);
-
-    res.headers_mut().insert("Access-Control-Allow-Origin", "*".parse().unwrap());
-    res.headers_mut().insert("Access-Control-Allow-Methods", "OPTIONS, GET, POST, PATCH, DELETE".parse().unwrap());
-    res.headers_mut().insert("Access-Control-Allow-Headers", "X-Requested-With,Content-Type,Authorization".parse().unwrap());
-
-    if req.method() == Method::OPTIONS {
-        res.headers_mut().insert("Allow", "OPTIONS, GET, POST, PATCH, DELETE".parse().unwrap());
-        res.headers_mut().insert("Access-Control-Max-Age", "86400".parse().unwrap());
-        *res.status_mut() = StatusCode::NO_CONTENT;
-        return Ok(());
-    }
-
-    // Check auth header
-    match req.headers().get("Authorization") {
-        Some(auth) => {
-            let str = auth.to_str().unwrap_or_default();
-
-            if str != &*AUTH {
-                log::warn!("Request failed authentication");
-                // Auth failed, set status and exit
-                *res.status_mut() = StatusCode::UNAUTHORIZED;
-                return Ok(());
-            }
-        }
-        _ => {
-            log::debug!("Request missing authentication");
-            // Auth missing, set status and exit
-            *res.status_mut() = StatusCode::UNAUTHORIZED;
-            res.headers_mut()
-                .insert("WWW-Authenticate", "Basic".parse().unwrap());
-            return Ok(());
-        }
-    }
-
-    let path = req.uri().path();
-    // Match against all the regexes at once
-    let regexes: [&Regex; 5] = [&*LISTS, &*LIST_ITEMS, &*ITEMS, &*LIST, &*ITEM];
-    let [c_lists, c_list_items, c_items, c_list, c_item] = regexes.map(|re| re.captures(path));
-
-    // Set here so that anything failing can go strait to return.
-    *res.status_mut() = StatusCode::NOT_FOUND;
-    let method = req.method().clone();
-
-    if let Some(_) = c_lists {
-        // /lists
-        match method {
-            Method::GET => {
-                // Get all lists
-                let lists = db.fetch_lists().await?;
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&lists)?.into();
-                Ok(())
-            }
-            Method::POST => {
-                // Create a list
-                let bytes = body::to_bytes(req.into_body()).await?;
-                let create_info: ListCreate = serde_json::from_slice(&bytes)?;
-                let list = db.create_list(&create_info.name).await?;
-                // Return the created list
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&list)?.into();
-                Ok(())
-            }
-            _ => return Ok(()),
-        }
-    } else if let Some(_) = c_items {
-        // /items
-        match method {
-            Method::GET => {
-                // Get all items
-                let items = db.fetch_all_items().await?;
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&items)?.into();
-                Ok(())
-            }
-            Method::POST => {
-                // Create an item
-                let bytes = body::to_bytes(req.into_body()).await?;
-                let create_info: ItemCreate = serde_json::from_slice(&bytes)?;
-                let item = db.create_item(create_info.list_id, &create_info.content).await?;
-                // Return the created item
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&item)?.into();
-                Ok(())
-            }
-            _ => return Ok(()),
-        }
-    } else if let Some(captures) = c_list {
-        let list_id: i32 = captures[1].parse().unwrap_or_default();
-        // /lists/<list_id>
-        match method {
-            Method::GET => {
-                // Get a specific list
-                let list = db.fetch_list(list_id).await?;
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&list)?.into();
-                Ok(())
-            }
-            Method::PATCH => {
-                // Rename a list
-                let bytes = body::to_bytes(req.into_body()).await?;
-                let rename: ListRename = serde_json::from_slice(&bytes)?;
-                db.rename_list(list_id, &rename.name).await?;
-                *res.status_mut() = StatusCode::OK;
-                Ok(())
-            }
-            Method::DELETE => {
-                // Delete a list
-                db.remove_list(list_id).await?;
-                *res.status_mut() = StatusCode::OK;
-                Ok(())
-            }
-            _ => return Ok(()),
-        }
-    } else if let Some(captures) = c_item {
-        let item_id: i32 = captures[1].parse().unwrap_or_default();
-        // /items/<item_id>
-        match method {
-            Method::GET => {
-                // Get a specific item
-                let item = db.fetch_item(item_id).await?;
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&item)?.into();
-                Ok(())
-            }
-            Method::PATCH => {
-                // Edit an item
-                let bytes = body::to_bytes(req.into_body()).await?;
-                let edit: ItemEdit = serde_json::from_slice(&bytes)?;
-                db.edit_item(item_id, &edit.content).await?;
-                *res.status_mut() = StatusCode::OK;
-                Ok(())
-            }
-            Method::DELETE => {
-                // Delete an item
-                db.remove_item(item_id).await?;
-                *res.status_mut() = StatusCode::OK;
-                Ok(())
-            }
-            _ => return Ok(()),
-        }
-    } else if let Some(captures) = c_list_items {
-        let list_id: i32 = captures[1].parse().unwrap_or_default();
-        // /lists/<list_id>/items
-        match method {
-            Method::GET => {
-                // Get the items of a list
-                let items = db.fetch_items(list_id).await?;
-                *res.status_mut() = StatusCode::OK;
-                *res.body_mut() = serde_json::to_string(&items)?.into();
-                Ok(())
-            }
-            _ => return Ok(()),
-        }
-    } else {
-        // if nothing matches, we go straight to return with a 404
-        Ok(())
-    }
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "tag", content = "value")]
+enum ServerMessage {
+    ListCreated(List),
+    ItemCreated(Item),
+    ListRenamed(List),
+    ItemEdited(Item),
+    ListRemoved(List),
+    ItemRemoved(Item),
 }
 
-async fn handle_req_wrap(
-    db: Arc<ListDatabase>,
-    req: Request<Body>,
-) -> Result<Response<Body>, Infallible> {
-    let mut res = Response::new(Body::empty());
+// There really aren't any message the client can send us
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "tag", content = "value")]
+enum ClientMessage {}
 
-    match handle_req(db, req, &mut res).await {
-        Err(ListError::NoSuchList(id)) => {
-            *res.status_mut() = StatusCode::BAD_REQUEST;
-            *res.body_mut() = format!("Reference to a list that doesn't exist (id: {id})").into();
+async fn get_lists(State(s): State<AppState>) -> Result<Json<Vec<List>>> {
+    Ok(Json(s.db.fetch_lists().await?))
+}
+
+async fn get_items(State(s): State<AppState>) -> Result<Json<Vec<Item>>> {
+    Ok(Json(s.db.fetch_all_items().await?))
+}
+
+async fn get_list(Path(id): Path<i32>, State(s): State<AppState>) -> Result<Json<List>> {
+    Ok(Json(s.db.fetch_list(id).await?))
+}
+
+async fn get_item(Path(id): Path<i32>, State(s): State<AppState>) -> Result<Json<Item>> {
+    Ok(Json(s.db.fetch_item(id).await?))
+}
+
+async fn get_list_items(
+    Path(list_id): Path<i32>,
+    State(s): State<AppState>,
+) -> Result<Json<Vec<Item>>> {
+    Ok(Json(s.db.fetch_items(list_id).await?))
+}
+
+async fn post_lists(
+    State(s): State<AppState>,
+    EJson(payload): EJson<ListCreate>,
+) -> Result<Json<List>> {
+    let res = s.db.create_list(&payload.name).await?;
+    s.send_to_ws(ServerMessage::ListCreated(res.clone()));
+    Ok(Json(res))
+}
+
+async fn post_items(
+    State(s): State<AppState>,
+    EJson(payload): EJson<ItemCreate>,
+) -> Result<Json<Item>> {
+    let res = s.db.create_item(payload.list_id, &payload.content).await?;
+    s.send_to_ws(ServerMessage::ItemCreated(res.clone()));
+    Ok(Json(res))
+}
+
+async fn patch_list(
+    Path(id): Path<i32>,
+    State(s): State<AppState>,
+    EJson(payload): EJson<ListRename>,
+) -> Result<()> {
+    let res = s.db.rename_list(id, &payload.name).await?;
+    s.send_to_ws(ServerMessage::ListRenamed(res));
+    Ok(())
+}
+
+async fn patch_item(
+    Path(id): Path<i32>,
+    State(s): State<AppState>,
+    EJson(payload): EJson<ItemEdit>,
+) -> Result<()> {
+    let res = s.db.edit_item(id, &payload.content).await?;
+    s.send_to_ws(ServerMessage::ItemEdited(res));
+    Ok(())
+}
+
+async fn delete_list(Path(id): Path<i32>, State(s): State<AppState>) -> Result<()> {
+    let res = s.db.remove_list(id).await?;
+    s.send_to_ws(ServerMessage::ListRemoved(res));
+    Ok(())
+}
+
+async fn delete_item(Path(id): Path<i32>, State(s): State<AppState>) -> Result<()> {
+    let res = s.db.remove_item(id).await?;
+    s.send_to_ws(ServerMessage::ItemRemoved(res));
+    Ok(())
+}
+
+async fn ws_handler_upgrade(
+    ws: WebSocketUpgrade<ServerMessage, ClientMessage>,
+    State(s): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| ws_handler(socket, s))
+}
+
+async fn ws_handler(mut socket: WebSocket<ServerMessage, ClientMessage>, mut s: AppState) {
+    tracing::debug!("Got a websocket connection");
+    'outer: loop {
+        // Try to send a ping
+        let Ok(_) = socket.send(Message::Ping(vec![])).await else {
+            break;
+        };
+
+        // Expect a pong back within 4s
+        let Ok(Some(Ok(Message::Pong(_)))) = timeout(Duration::from_secs(4), socket.recv()).await
+        else {
+            break;
+        };
+
+        // Get the updates in a loop, if no updates within 60s, loop back and send a ping, this makes sure that
+        // no channels stays open for more than a minute if unused
+        while let Ok(Ok(msg)) = timeout(Duration::from_secs(60), s.rx.recv()).await {
+            if let Err(e) = socket.send(Message::Item(msg)).await {
+                tracing::error!("Error when sending websocket message, closing connection: {e:?}");
+                break 'outer;
+            }
         }
-        Err(ListError::NoSuchItem(id)) => {
-            *res.status_mut() = StatusCode::BAD_REQUEST;
-            *res.body_mut() = format!("Reference to an item that doesn't exist (id: {id})").into();
-        }
-        Err(ListError::DuplicateListName(name)) => {
-            *res.status_mut() = StatusCode::BAD_REQUEST;
-            *res.body_mut() = format!("Trying to create a list with a duplicate name (name: '{name}')").into();
-        }
-        Err(ListError::HyperError(e)) => {
-            *res.status_mut() = StatusCode::BAD_REQUEST;
-            *res.body_mut() = format!("Error with request body: {e}").into();
-        }
-        Err(ListError::SerdeError(e)) => {
-            *res.status_mut() = StatusCode::BAD_REQUEST;
-            *res.body_mut() = format!("Error with request body: {e}").into();
-        }
-        Err(e) => {
-            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            *res.body_mut() = format!("Server error: {e:?}").into();
-        },
-        _ => {}
-    };
-    Ok(res)
+    }
+    tracing::debug!("Closed websocket connection because of an error or innactivity");
 }
 
 #[tokio::main]
-async fn main() -> Result<(), ListError> {
-    env_logger::init();
+async fn main() -> Result<()> {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "backend=debug,tower-http=debug".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     let db = Arc::new(ListDatabase::new().await?);
-    log::info!("Database initialized");
-    let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
 
-    let make_svc = make_service_fn(move |_conn| {
-        let db = db.clone();
-        log::info!("Received connection");
-        async move { Ok::<_, Infallible>(service_fn(move |r| handle_req_wrap(db.clone(), r))) }
-    });
+    let (tx, rx) = tokio::sync::broadcast::channel(32);
 
-    let server = Server::bind(&addr).serve(make_svc);
+    let app = Router::new()
+        .route("/lists", get(get_lists).post(post_lists))
+        .route("/items", get(get_items).post(post_items))
+        .route(
+            "/lists/:id",
+            get(get_list).patch(patch_list).delete(delete_list),
+        )
+        .route("/lists/:id/items", get(get_list_items))
+        .route(
+            "/items/:id",
+            get(get_item).patch(patch_item).delete(delete_item),
+        )
+        .layer(ValidateRequestHeaderLayer::basic(&USERNAME, &PASSWORD))
+        .route("/ws", get(ws_handler_upgrade))
+        .layer(TimeoutLayer::new(Duration::from_secs(4)))
+        .layer(
+            /*
+            CorsLayer::new()
+                .allow_origin("*".parse::<HeaderValue>().unwrap())
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PATCH,
+                    Method::DELETE,
+                    Method::OPTIONS,
+                ])
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+                */
+            CorsLayer::very_permissive(),
+        )
+        .with_state(AppState { db, tx, rx })
+        .layer(TraceLayer::new_for_http());
 
-    log::info!("Server started!");
+    let listener = std::net::TcpListener::bind("0.0.0.0:9000").unwrap();
 
-    if let Err(e) = server.await {
-        eprintln!("server error: {e}");
-    }
+    axum::Server::from_tcp(listener)
+        .unwrap()
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 
     Ok(())
 }

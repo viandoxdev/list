@@ -9,10 +9,10 @@ interface EditingProps {
 }
 
 function Editing(props: EditingProps) {
-  let input: HTMLInputElement;
-  let overlay: HTMLDivElement;
+  let input: HTMLInputElement | undefined;
+  let overlay: HTMLDivElement | undefined;
   onMount(() => requestAnimationFrame(() => requestAnimationFrame(() => {
-    overlay.style.opacity = "1";
+    overlay && (overlay.style.opacity = "1");
   })))
   return (
     <>
@@ -21,7 +21,7 @@ function Editing(props: EditingProps) {
           <input ref={input} type="text" value={props.value} />
           <div id="controls">
             <input type="button" onClick={props.onCancel} value="annuler" />
-            <input type="submit" onClick={() => input.value !== "" && props.onConfirm(input.value)} value="confirmer" />
+            <input type="submit" onClick={() => input && input.value !== "" && props.onConfirm(input.value)} value="confirmer" />
           </div>
         </form>
       </div>

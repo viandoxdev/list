@@ -28,7 +28,7 @@ enum Direction {
 }
 
 function ItemComponent(props: ItemProps) {
-  let div: HTMLDivElement;
+  let div: HTMLDivElement | undefined;
   // Last position of the touch
   let lastPos = { x: 0, y: 0 };
   // Start position of the touch
@@ -44,7 +44,6 @@ function ItemComponent(props: ItemProps) {
   let offset = 0;
   const onTouchStart = (e: TouchEvent) => {
     if (touchIdent) return;
-    e.preventDefault();
     if (e.targetTouches.length > 1) return;
     const touch = e.targetTouches.item(0);
     if (touch) {
@@ -58,6 +57,9 @@ function ItemComponent(props: ItemProps) {
     }
   }
   const onTouchMove = (e: TouchEvent) => {
+    // Can't happen, here to make typescript happy
+    if (div === undefined) return;
+
     const touch = getTouchByIdent(e.touches, touchIdent);
     if (touch === null) return;
 
@@ -81,6 +83,9 @@ function ItemComponent(props: ItemProps) {
     lastPos.y = touch.clientY;
   }
   const onTouchEnd = async (e: TouchEvent) => {
+    // Can't happen, here to make typescript happy
+    if (div === undefined) return;
+
     const touch = getTouchByIdent(e.changedTouches, touchIdent);
     let removed = false;
     if (touch) {
@@ -122,6 +127,9 @@ function ItemComponent(props: ItemProps) {
     offset = 0;
   }
   const onTouchCancel = (_: TouchEvent) => {
+    // Can't happen, here to make typescript happy
+    if (div === undefined) return;
+
     touchIdent = undefined;
     offset = 0;
     div.style.transform = 'translateX(10px)';
