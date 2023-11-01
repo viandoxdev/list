@@ -33,7 +33,7 @@ interface WsMessageItem {
 type WsMessage = WsMessageList | WsMessageItem;
 
 function App() {
-  const host = "localhost:9000"
+  const host = "192.168.1.33:9000"
   const api = new Api(`http://${host}`, "listclient", "7Q8cA87Wd5xHYPqxQe5AjeF9WSnX7hSzMjmZRA6T9r3BZAqSzcWXAVrpwg6qT247CHEBpUhemfKm36YF8AShV654Tg8HtK36TgcJX4bPUkaEZdfgn2wEXhQrHbYgmwKf3TLHAfJMRbsmCBjkUNxfTVHCuUqvbCApvPFdgDzfwYqXj4uszWrzzhGmqshZbNnxXGHDytgkp6gsetQMEn5EgY6J6WwADBHf6G6hCBUAYLAdyPpaBMbJFxBugEjVfcmD");
 
   const [lists, setLists] = createStore<OwningList[]>([]);
