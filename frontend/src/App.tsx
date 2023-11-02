@@ -8,6 +8,7 @@ import { createStore, produce, reconcile } from 'solid-js/store';
 import { Api, Item, List } from './api.ts'
 import ItemComponent from './Item.tsx';
 import { VsLoading } from 'solid-icons/vs';
+import config from '../config.json'
 
 interface EditingInfo {
   listIndex: number,
@@ -33,8 +34,8 @@ interface WsMessageItem {
 type WsMessage = WsMessageList | WsMessageItem;
 
 function App() {
-  const host = "192.168.1.33:9000"
-  const api = new Api(`http://${host}`, "listclient", "7Q8cA87Wd5xHYPqxQe5AjeF9WSnX7hSzMjmZRA6T9r3BZAqSzcWXAVrpwg6qT247CHEBpUhemfKm36YF8AShV654Tg8HtK36TgcJX4bPUkaEZdfgn2wEXhQrHbYgmwKf3TLHAfJMRbsmCBjkUNxfTVHCuUqvbCApvPFdgDzfwYqXj4uszWrzzhGmqshZbNnxXGHDytgkp6gsetQMEn5EgY6J6WwADBHf6G6hCBUAYLAdyPpaBMbJFxBugEjVfcmD");
+  const host = config.host;
+  const api = new Api(`http://${host}`, config.username, config.password);
 
   const [lists, setLists] = createStore<OwningList[]>([]);
   const [listsResource] = createResource(async () => {
