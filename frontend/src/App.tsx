@@ -91,7 +91,7 @@ function App() {
       }
       case "ListRenamed": {
         const index = lists.findIndex(l => l.id === data.value.id);
-        if(index === -1) {
+        if (index === -1) {
           console.warn("Renamed list that doesn't exist");
           break;
         }
@@ -119,13 +119,13 @@ function App() {
       }
       case "ItemRemoved": {
         const list_index = lists.findIndex(l => l.id === data.value.list_id);
-        if(list_index === -1) {
+        if (list_index === -1) {
           console.warn("Deleted an item that doesn't belong to any list");
           break;
         }
         const index = lists[list_index].items.findIndex(i => i.id === data.value.id);
         // We might have already deleted that item
-        if(index === -1) break;
+        if (index === -1) break;
         setLists(produce(lists => {
           lists[list_index].items.splice(index, 1);
         }));
@@ -151,7 +151,7 @@ function App() {
       </div>
       <Suspense fallback={
         <div id="loading">
-          <VsLoading size="60" id="spinner"/>
+          <VsLoading size="60" id="spinner" />
           <span>Chargement...</span>
         </div>
       }>
@@ -195,7 +195,7 @@ function App() {
           new: true,
         });
       }}>
-        <FiPlus size="30"/>
+        <FiPlus size="30" />
       </button>
       <Show when={editing() !== undefined}>
         <Editing onCancel={() => setEditing(undefined)} onConfirm={(value) => {
@@ -207,7 +207,7 @@ function App() {
             list_id,
           } : lists[edit.listIndex].items[edit.itemIndex];
           setLists(edit.listIndex, "items", edit.itemIndex, item);
-          if(edit.new) {
+          if (edit.new) {
             api.create_item(list_id, value)
           } else {
             api.edit_item(item.id, value);

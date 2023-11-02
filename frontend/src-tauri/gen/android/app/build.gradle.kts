@@ -5,11 +5,19 @@ plugins {
 }
 
 android {
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("/home/vndx/keystores/upload-keystore.jks")
+            storePassword = ",dF{P!n\'20_Pr2n.wwE2~n+!?"
+            keyAlias = "upload"
+            keyPassword = ",dF{P!n\'20_Pr2n.wwE2~n+!?"
+        }
+    }
     compileSdk = 33
-    namespace = "com.tauri.app"
+    namespace = "dev.vndx.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.tauri.app"
+        applicationId = "dev.vndx.app"
         minSdk = 24
         targetSdk = 33
         versionCode = 1
